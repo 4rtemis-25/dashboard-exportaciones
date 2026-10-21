@@ -1,0 +1,38 @@
+
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="2" y="11" width="4" height="9" rx="1" fill="currentColor"/><rect x="9" y="5" width="4" height="15" rx="1" fill="currentColor"/><rect x="16" y="8" width="4" height="12" rx="1" fill="currentColor" opacity=".7"/></svg></span>
+    <div><b>Panel de Exportaciones</b><span class="s">Declaraciones de exportación · carga mensual</span></div>
+  </div>
+  <div class="files" id="files"></div>
+  <div class="seg themeseg" role="group" aria-label="Tema de color">
+    <button type="button" data-theme-set="auto">Auto</button><button type="button" data-theme-set="light">Claro</button><button type="button" data-theme-set="dark">Oscuro</button>
+  </div>
+  <button type="button" class="btn primary" data-pick>Cargar archivos</button>
+</header>
+<input type="file" id="fileIn" accept=".xlsx,.xlsm" multiple hidden>
+<div class="layout">
+  <aside id="side" aria-label="Filtros"></aside>
+  <main>
+    <div id="banner"></div>
+    <div class="status" id="status" hidden>
+      <div class="stats" id="stats"></div>
+      <div class="active" id="active"></div>
+    </div>
+    <div class="toolbar" id="toolbar" hidden>
+      <div class="tl">
+        <button type="button" class="btn" id="filtToggle">Filtros</button>
+        <div class="tabs" role="tablist" aria-label="Vista">
+          <button type="button" role="tab" data-tab="graficos">Gráficos</button>
+          <button type="button" role="tab" data-tab="resumen">Resumen</button>
+          <button type="button" role="tab" data-tab="explorar">Explorar</button>
+          <button type="button" role="tab" data-tab="registros">Registros</button>
+        </div>
+      </div>
+      <div class="mseg"><span>Medir en</span><div id="measure"></div></div>
+    </div>
+    <div id="view"></div>
+  </main>
+</div>
+<div class="overlay" id="overlay" hidden><div class="box" role="status"><b>Procesando archivo</b><div id="ptext" class="note" style="padding:6px 0 0"></div><div class="pbar"><div id="pfill"></div></div></div></div>
+<div id="tip"></div><div id="toast" role="status"></div>
