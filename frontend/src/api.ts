@@ -107,6 +107,29 @@ export interface RecordsParams extends FilterParams {
   page_size?: number;
 }
 
+// Columnas de valor de Explorar (EXTRA_MEASURES en query.py)
+export type ExtraMeasure = 'fob_usd' | 'fob_cop' | 'kg' | 'kg_bruto' | 'cnt'
+                         | 'formularios' | 'fob_kg' | 'fletes' | 'seguros';
+
+export interface ColumnsParams extends FilterParams {
+  dim: string;
+  keys: string[];                 // filas ya rankeadas; el orden no cambia
+  measures?: ExtraMeasure[];
+  related?: string[];             // dimensiones relacionadas
+  related_measure?: GroupMeasure; // ordena los valores relacionados
+  related_top?: number;
+}
+
+export interface RelatedCell {
+  n: number;                          // valores distintos (sin "(sin dato)")
+  top: [string, number, number][];    // [valor, medida, participación 0–1]
+}
+
+export type ColumnsResult = Record<string, {
+  m: Partial<Record<ExtraMeasure, number | null>>;
+  r: Record<string, RelatedCell>;
+}>;
+
 export interface TimeParams extends FilterParams {
   granularity?: 'mes' | 'dia';
   stack_dim?: string | null;
@@ -151,5 +174,6 @@ export const api = {
     group:   (p: GroupParams)   => post<GroupRow[]>('/api/query/group', p),
     records: (p: RecordsParams) => post<RecordsResult>('/api/query/records', p),
     time:    (p: TimeParams)    => post<TimePoint[]>('/api/query/timeseries', p),
+    columns: (p: ColumnsParams) => post<ColumnsResult>('/api/query/columns', p),
   },
 };

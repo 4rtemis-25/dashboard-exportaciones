@@ -276,3 +276,9 @@ body.dragging .drop { border-color: var(--accent); background: var(--accent-soft
   .stat.big b { font-size: 22px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* Explorar: columnas de valores principales (p. ej. países de un exportador) */
+td.rel { font-size: 13.5px; line-height: 1.45; }
+td.rel small { color: var(--ink-3); font-family: var(--font-num); font-size: 12px; white-space: nowrap; }
+td.rel .more { color: var(--ink-2); font-weight: 600; }
+th small { font-weight: 400; color: var(--ink-3); }

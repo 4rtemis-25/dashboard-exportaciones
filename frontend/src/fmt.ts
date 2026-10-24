@@ -5,6 +5,9 @@
 export const nf0 = new Intl.NumberFormat('es-CO', { maximumFractionDigits: 0 });
 export const nf1 = new Intl.NumberFormat('es-CO', { maximumFractionDigits: 1 });
 export const nf2 = new Intl.NumberFormat('es-CO', { maximumFractionDigits: 2 });
+// Decimales fijos para tablas: "14,0 %" y "US$ 133.923,20" alinean con el resto
+export const nf1f = new Intl.NumberFormat('es-CO', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+export const nf2f = new Intl.NumberFormat('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 

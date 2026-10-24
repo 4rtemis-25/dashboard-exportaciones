@@ -60,6 +60,16 @@ class RecordsParams(FilterParams):
 
 
 @dataclass
+class ColumnsParams(FilterParams):
+    dim:              str           = 'pais'
+    keys:             list[str]     = field(default_factory=list)  # filas ya rankeadas
+    measures:         list[str]     = field(default_factory=list)  # claves de EXTRA_MEASURES
+    related:          list[str]     = field(default_factory=list)  # dimensiones relacionadas
+    related_measure:  str           = 'fob_usd'                    # ordena los valores relacionados
+    related_top:      int           = 3
+
+
+@dataclass
 class TimeParams(FilterParams):
     granularity: str            = 'mes'   # 'mes' | 'dia'
     stack_dim:   Optional[str]  = None
@@ -220,6 +230,77 @@ def group(files: list[Path], p: GroupParams) -> list[dict]:
          'kg': r[3] or 0.0, 'cnt': r[4], 'n_keys': r[5]}
         for r in rows
     ]
+
+
+# Columnas de valor que se pueden agregar en Explorar (alias → expresión SQL)
+EXTRA_MEASURES = {
+    'fob_usd':     'SUM(fob_usd)',
+    'fob_cop':     'SUM(fob_cop)',
+    'kg':          'SUM(kg_neto)',
+    'kg_bruto':    'SUM(kg_bruto)',
+    'cnt':         'COUNT(*)',
+    'formularios': _distinct('formulario'),
+    'fob_kg':      'SUM(fob_usd) / NULLIF(SUM(kg_neto), 0)',   # precio implícito US$/kg
+    'fletes':      'SUM(fletes)',
+    'seguros':     'SUM(seguros)',
+}
+# Medida que ordena los valores relacionados (las mismas de group())
+RELATED_MEASURE_SQL = {'fob_usd': 'SUM(fob_usd)', 'fob_cop': 'SUM(fob_cop)',
+                       'kg': 'SUM(kg_neto)', 'cnt': 'COUNT(*)'}
+
+
+def columns(files: list[Path], p: ColumnsParams) -> dict:
+    """
+    Columnas adicionales de Explorar para filas ya rankeadas por group().
+    No cambia qué filas hay ni su orden: solo calcula, para cada `key`:
+      - m: valores de las medidas pedidas
+      - r: por dimensión relacionada, sus `related_top` valores principales
+           (ordenados por related_measure) con su participación dentro de la
+           fila, y n = cuántos valores distintos tiene (sin contar '(sin dato)').
+    """
+    if p.dim not in VALID_DIMS:
+        raise ValueError(f'Dimensión no válida: {p.dim!r}')
+    bad = [m for m in p.measures if m not in EXTRA_MEASURES]
+    bad += [d for d in p.related if d not in VALID_DIMS or d == p.dim]
+    if bad or p.related_measure not in RELATED_MEASURE_SQL:
+        raise ValueError(f'Columnas no válidas: {bad or [p.related_measure]}')
+    if not p.keys:
+        return {}
+
+    src = _from(files)
+    where, args = _where(p)
+    # Solo las filas pedidas, con los mismos filtros que el ranking
+    where = (where + ' AND ' if where else 'WHERE ') + \
+        f'"{p.dim}" IN ({", ".join("?" for _ in p.keys)})'
+    args = args + list(p.keys)
+    out: dict[str, dict] = {k: {'m': {}, 'r': {}} for k in p.keys}
+
+    with duckdb.connect() as con:
+        if p.measures:
+            sel = ', '.join(f'{EXTRA_MEASURES[m]} AS "{m}"' for m in p.measures)
+            for row in con.execute(
+                    f'SELECT "{p.dim}" AS key, {sel} FROM {src} {where} GROUP BY 1', args).fetchall():
+                out[row[0]]['m'] = {m: row[i + 1] for i, m in enumerate(p.measures)}
+
+        rm = RELATED_MEASURE_SQL[p.related_measure]
+        for rel in p.related:
+            sql = f"""
+                SELECT key, val, v, v / NULLIF(tot, 0) AS share, n FROM (
+                    SELECT key, val, v,
+                           ROW_NUMBER() OVER (PARTITION BY key ORDER BY v DESC, val) AS rn,
+                           SUM(v) OVER (PARTITION BY key) AS tot,
+                           SUM(CASE WHEN val <> '{NODATA}' THEN 1 ELSE 0 END)
+                               OVER (PARTITION BY key) AS n
+                    FROM (
+                        SELECT "{p.dim}" AS key, "{rel}" AS val, {rm} AS v
+                        FROM {src} {where} GROUP BY 1, 2
+                    )
+                ) WHERE rn <= ? ORDER BY key, rn
+            """
+            for key, val, v, share, n in con.execute(sql, args + [p.related_top]).fetchall():
+                r = out[key]['r'].setdefault(rel, {'n': int(n), 'top': []})
+                r['top'].append([val, v or 0.0, share or 0.0])
+    return out
 
 
 def records(files: list[Path], p: RecordsParams) -> dict:

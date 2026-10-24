@@ -12,7 +12,7 @@ import tempfile
 
 from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from converter import ConversionError, excel_to_parquet
 import query as Q
@@ -61,6 +61,16 @@ class RecordsBody(FilterBody):
     direction: int = -1
     page:      int = 0
     page_size: int = 100
+
+
+class ColumnsBody(FilterBody):
+    dim:             str
+    keys:            list[str] = Field(default_factory=list, max_length=500)
+    measures:        list[Literal['fob_usd', 'fob_cop', 'kg', 'kg_bruto', 'cnt',
+                                  'formularios', 'fob_kg', 'fletes', 'seguros']] = []  # = Q.EXTRA_MEASURES
+    related:         list[str] = Field(default_factory=list, max_length=10)
+    related_measure: Literal['fob_usd', 'fob_cop', 'kg', 'cnt'] = 'fob_usd'
+    related_top:     int = Field(3, ge=1, le=10)
 
 
 class TimeBody(FilterBody):
@@ -192,3 +202,22 @@ def query_timeseries(body: TimeBody):
         granularity=body.granularity, stack_dim=body.stack_dim,
     )
     return Q.timeseries(files, p)
+
+
+@app.post('/api/query/columns')
+def query_columns(body: ColumnsBody):
+    """
+    Columnas adicionales de Explorar para las filas ya rankeadas (body.keys).
+    No altera el ranking: solo agrega valores por fila. Ver Q.columns.
+    """
+    files = Q.resolve_files(DATA_DIR)
+    if not files:
+        return {}
+    p = Q.ColumnsParams(
+        **_fp(body).__dict__, dim=body.dim, keys=body.keys, measures=list(body.measures),
+        related=body.related, related_measure=body.related_measure, related_top=body.related_top,
+    )
+    try:
+        return Q.columns(files, p)
+    except ValueError as e:
+        raise HTTPException(400, str(e))

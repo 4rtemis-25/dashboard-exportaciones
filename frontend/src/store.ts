@@ -62,6 +62,9 @@ export interface AppState {
   rankDim: string;
   rankTop: number;
   rankByMonth: boolean;
+  // Columnas extra de Explorar, en el orden en que se agregaron:
+  // 'm:<medida>' (valor) o 'r:<dimensión>' (valores relacionados)
+  exploreCols: string[];
   sideOpen: boolean;
 
   // Gráficos (en el store para que no se pierda al cambiar de pestaña)
@@ -94,6 +97,7 @@ export interface AppState {
   setRankDim: (d: string) => void;
   setRankTop: (n: number) => void;
   setRankByMonth: (v: boolean) => void;
+  setExploreCols: (cols: string[]) => void;
   setSideOpen: (v: boolean) => void;
   setRegSort: (col: string, dir?: 1 | -1) => void;
   setRegPage: (p: number) => void;
@@ -112,6 +116,8 @@ export const useStore = create<AppState>((set, get) => ({
   text: '',
   measure: 'fobUsd', tab: 'graficos', theme: 'auto', gran: 'mes',
   stackDim: '', rankDim: 'pais', rankTop: 25, rankByMonth: false,
+  // Las mismas columnas que tenía la tabla antes de poder elegirlas
+  exploreCols: ['m:fob_usd', 'm:kg', 'm:cnt'],
   sideOpen: true,
   regSort: 'fob_usd', regDir: -1, regPage: 0,
   // rest: activado por defecto; torta, dona y árbol representan un todo
@@ -136,6 +142,7 @@ export const useStore = create<AppState>((set, get) => ({
   setRankDim:   (rankDim) => set({ rankDim }),
   setRankTop:   (rankTop) => set({ rankTop }),
   setRankByMonth: (rankByMonth) => set({ rankByMonth }),
+  setExploreCols: (exploreCols) => set({ exploreCols }),
   setText:      (text) => set({ text, regPage: 0 }),
   setRegPage:   (regPage) => set({ regPage }),
   setChart:     (p) => set(s => ({ chart: { ...s.chart, ...p } })),
