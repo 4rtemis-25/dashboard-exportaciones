@@ -1,13 +1,14 @@
 /**
- * Pestaña Gráficos: Top N con tipos SVG 2D (torta, dona, barras, hbar, mapa de árbol, líneas).
- * El motor 3D (three.js) se puede agregar en la siguiente iteración.
+ * Pestaña Gráficos: Top N con tipos SVG 2D (torta, dona, barras, hbar, mapa de árbol, líneas)
+ * y 3D (three.js). Al pasar el ratón cada elemento muestra su tooltip (data-tip).
  */
 import { useEffect, useState } from 'react';
-import { useStore, MEASURE_KEY } from '../store';
-import { api, type GroupRow, type TimePoint } from '../api';
+import { useStore, MEASURE_KEY, summaryTotal } from '../store';
+import { api, type GroupRow, type Summary, type TimePoint } from '../api';
 import { FILT_DIMS, MEAS } from '../dims';
-import { fm, nf0, nf1, compact, fmtDim, mesLabel } from '../fmt';
+import { axisFmt, fm, fmFull, nf0, nf1, fmtDim, mesLabel } from '../fmt';
 import { Chart3D, type ChartItem } from './Chart3D';
+import { itemTip, tip } from '../tip';
 
 const PALETTES: Record<string, string[]> = {
   base:      ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#6250d6','#e34948','#2f9e44','#2aa7c9','#9a6b43','#8fb339','#5f7d95'],
@@ -20,7 +21,18 @@ const PAL_NAMES = { base:'Predeterminada', calida:'Cálida', fria:'Fría', contr
 const OTHER_COLOR = '#9aa6a2';
 const TOPS = [3,4,5,6,8,10,12];
 const TYPES_2D = [['pie','Torta'],['donut','Dona'],['bar','Barras'],['hbar','H. Barras'],['tree','Árbol'],['line','Líneas']] as const;
+// Gráficos de parte-todo: sin "Otros" no representan el total
+const PART_OF_WHOLE = ['pie', 'donut', 'tree', 'pie3d', 'donut3d'];
 const TYPES_3D = [['bar3d','Barras 3D'],['pie3d','Torta 3D'],['donut3d','Dona 3D']] as const;
+
+// Mismo formato que el prototipo (studio.js), para conservar los colores ya elegidos
+function loadColors(): { c: Record<string, string>; p: string } {
+  try {
+    const o = JSON.parse(localStorage.getItem('pe-colors') || 'null');
+    if (o) return { c: o.c || {}, p: PALETTES[o.p] ? o.p : 'base' };
+  } catch {}
+  return { c: {}, p: 'base' };
+}
 
 function arcPath(cx: number, cy: number, r0: number, r1: number, a0: number, a1: number) {
   const p = (r: number, a: number) => [cx + r * Math.cos(a), cy + r * Math.sin(a)] as [number, number];
@@ -38,33 +50,54 @@ function niceStep(x: number) {
 }
 
 export function TabGraficos() {
-  const { measure, months, buildFilter } = useStore();
-  const [dim, setDim] = useState('pais');
-  const [top, setTop] = useState(5);
-  const [type, setType] = useState<string>('pie');
-  const [showRest, setShowRest] = useState(false);
-  const [pal, setPal] = useState('base');
-  const [colors] = useState<Record<string, string>>({});
+  const { measure, buildFilter, chart, setChart } = useStore();
+  // Configuración en el store: se conserva al cambiar de pestaña
+  const { dim, top, type, rest: showRest, colorsOpen } = chart;
+  const setDim = (dim: string) => setChart({ dim });
+  const setTop = (top: number) => setChart({ top });
+  const setType = (type: string) => setChart({ type });
+  const setShowRest = (rest: boolean) => setChart({ rest });
+  const setColorsOpen = (f: (o: boolean) => boolean) => setChart({ colorsOpen: f(colorsOpen) });
+  const [pal, setPal] = useState(() => loadColors().p);
+  // Color elegido por el usuario para cada entidad, clave `dimensión|nombre`
+  const [colors, setColors] = useState<Record<string, string>>(() => loadColors().c);
   const [rows, setRows] = useState<GroupRow[]>([]);
-  const [total, setTotal] = useState(0);
+  // Totales de todo el universo filtrado, no solo de las filas del Top
+  const [totals, setTotals] = useState<Summary | null>(null);
   const [lineData, setLineData] = useState<TimePoint[]>([]);
   const mKey = MEASURE_KEY[measure];
+  const total = totals ? summaryTotal(totals, measure) : 0;
+  const nKeys = rows[0]?.n_keys ?? 0;
 
   useEffect(() => {
+    let vigente = true;  // descarta respuestas de filtros anteriores
     const f = buildFilter();
-    api.query.group({ ...f, dim, measure: mKey, limit: Math.max(top + 20, 50) }).then(rows => {
+    Promise.all([
+      api.query.group({ ...f, dim, measure: mKey, limit: top }),
+      api.query.summary(f),
+    ]).then(([rows, s]) => {
+      if (!vigente) return;
       setRows(rows);
-      setTotal(rows.reduce((s, r) => s + (r[mKey as keyof GroupRow] as number), 0));
+      setTotals(s);
     });
+    return () => { vigente = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(buildFilter()), dim, top, measure]);
 
   useEffect(() => {
     if (type !== 'line') return;
+    let vigente = true;
     const f = buildFilter();
-    api.query.time({ ...f, granularity: 'mes', stack_dim: dim }).then(setLineData).catch(() => setLineData([]));
+    api.query.time({ ...f, granularity: 'mes', stack_dim: dim })
+      .then(d => { if (vigente) setLineData(d); })
+      .catch(() => { if (vigente) setLineData([]); });
+    return () => { vigente = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [type === 'line' ? JSON.stringify(buildFilter()) : null, dim, type, measure]);
+
+  useEffect(() => {
+    try { localStorage.setItem('pe-colors', JSON.stringify({ c: colors, p: pal })); } catch {}
+  }, [colors, pal]);
 
   const palette = PALETTES[pal] ?? PALETTES.base;
   const colorFor = (name: string, rank: number) => colors[`${dim}|${name}`] ?? palette[rank % 12];
@@ -73,16 +106,24 @@ export function TabGraficos() {
     ...r,
     color: colorFor(fmtDim(dim, r.key), i),
     displayKey: fmtDim(dim, r.key),
+    ckey: `${dim}|${fmtDim(dim, r.key)}`,
   }));
-  const restV = total - items.reduce((s, it) => s + (it[mKey as keyof typeof it] as number), 0);
-  if (showRest && rows.length > top && restV > 0) {
-    items.push({ key: `__otros`, fob_usd: restV, fob_cop: 0, kg: 0, cnt: 0,
-      color: colors[`${dim}|__otros`] ?? OTHER_COLOR, displayKey: `Otros (${rows.length - top})` } as any);
+  if (showRest && totals && nKeys > items.length) {
+    // "Otros" = total del resumen − lo mostrado, en las cuatro medidas
+    const rest = { fob_usd: totals.fob, fob_cop: totals.cop, kg: totals.kg, cnt: totals.n };
+    const shown = (k: keyof typeof rest) => items.reduce((s, it) => s + it[k], 0);
+    (Object.keys(rest) as (keyof typeof rest)[]).forEach(k => { rest[k] -= shown(k); });
+    if (rest[mKey] > 0) {
+      items.push({ key: '__otros', ...rest, n_keys: nKeys,
+        color: colors[`${dim}|__otros`] ?? OTHER_COLOR,
+        displayKey: `Otros (${nf0.format(nKeys - items.length)})`, ckey: `${dim}|__otros` });
+    }
   }
 
   function renderChart() {
     if (!items.length || total <= 0) return <div className="note">Sin datos con los filtros actuales.</div>;
     const sum = items.reduce((s, it) => s + (it[mKey as keyof typeof it] as number), 0);
+    const tipOf = (it: typeof items[number]) => itemTip(it, mKey, total);
 
     if (type === 'pie' || type === 'donut') {
       const cx = 130, cy = 130, r1 = 122, r0 = type === 'donut' ? 72 : 0; let a = -Math.PI / 2;
@@ -90,9 +131,13 @@ export function TabGraficos() {
         <svg viewBox="0 0 260 260" style={{ maxWidth: 300, display: 'block', width: '100%', height: 'auto' }}>
           {items.map(it => {
             const v = it[mKey as keyof typeof it] as number;
-            const f = Math.min(v / sum, 0.99999), a1 = a + f * Math.PI * 2;
+            // Un solo elemento: círculo completo (un arco de 360° deja una costura)
+            if (v / sum >= 0.99999) return r0 > 0
+              ? <circle key={it.key} cx={cx} cy={cy} r={(r0 + r1) / 2} fill="none" stroke={it.color} strokeWidth={r1 - r0} data-tip={tipOf(it)} />
+              : <circle key={it.key} cx={cx} cy={cy} r={r1} fill={it.color} data-tip={tipOf(it)} />;
+            const f = v / sum, a1 = a + f * Math.PI * 2;
             const path = arcPath(cx, cy, r0, r1, a, a1); a = a1;
-            return <path key={it.key} d={path} fill={it.color} stroke="var(--surface)" strokeWidth={2} style={{ cursor: 'pointer' }} />;
+            return <path key={it.key} d={path} fill={it.color} stroke="var(--surface)" strokeWidth={2} style={{ cursor: 'pointer' }} data-tip={tipOf(it)} />;
           })}
           {type === 'donut' && <>
             <text x="130" y="126" textAnchor="middle" style={{ fontSize: 11, fill: 'var(--ink-3)' }}>Total</text>
@@ -112,12 +157,12 @@ export function TabGraficos() {
           {Array.from({ length: Math.round(topV / step) + 1 }, (_, i) => i * step).map(t => {
             const y = T + ih - t / topV * ih;
             return <g key={t}><line x1={L} x2={W-Rr} y1={y} y2={y} stroke="var(--grid)"/>
-              <text x={L-6} y={y+4} textAnchor="end" style={{ fill:'var(--ink-3)', fontSize:11.5, fontFamily:'var(--font-num)' }}>{compact(t)}</text></g>;
+              <text x={L-6} y={y+4} textAnchor="end" style={{ fill:'var(--ink-3)', fontSize:11.5, fontFamily:'var(--font-num)' }}>{axisFmt(mKey, t, topV)}</text></g>;
           })}
           {items.map((it, i) => {
             const v = it[mKey as keyof typeof it] as number;
             const h = Math.max(1, v / topV * ih), x = L + band * i + (band - bw) / 2;
-            return <g key={it.key}>
+            return <g key={it.key} data-tip={tipOf(it)}>
               <rect x={x} y={T+ih-h} width={bw} height={h} rx={3} fill={it.color} />
               <text x={x+bw/2} y={H-24} textAnchor="middle" style={{ fontSize: 11, fill: 'var(--ink-3)', fontFamily: 'var(--font-ui)' }}>{it.displayKey.slice(0,10)}</text>
             </g>;
@@ -134,7 +179,7 @@ export function TabGraficos() {
           {items.map(it => {
             const v = it[mKey as keyof typeof it] as number;
             return (
-              <div key={it.key} className="br">
+              <div key={it.key} className="br" data-tip={tipOf(it)}>
                 <span className="t">{it.displayKey}</span>
                 <span className="tr"><span className="f" style={{ display:'block', width: `${Math.max(0.5, v/maxV*100)}%`, background: it.color }} /></span>
                 <span className="v">{fm(mKey, v)}</span>
@@ -164,7 +209,7 @@ export function TabGraficos() {
       return (
         <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }}>
           {rects.map(([it, x, y, w, h]) => (
-            <g key={it.key}>
+            <g key={it.key} data-tip={tipOf(it)}>
               <rect x={x+1} y={y+1} width={Math.max(w-2,0)} height={Math.max(h-2,0)} rx={4} fill={it.color} />
               {w > 70 && h > 40 && <text x={x+10} y={y+22} style={{ fill:'#fff', fontSize:13, fontWeight:600, fontFamily:'var(--font-ui)' }}>{it.displayKey.slice(0,12)}</text>}
             </g>
@@ -176,7 +221,7 @@ export function TabGraficos() {
     if (type === 'line') {
       const periods = [...new Set(lineData.map(r => String(r.period)))].sort();
       const nM = periods.length;
-      if (months.length < 2 || nM < 2)
+      if (nM < 2)
         return <div className="note">Las líneas por mes necesitan al menos 2 meses cargados. Carga otro mes o elige otro tipo de gráfico.</div>;
 
       const matMap = new Map<string, Map<string, number>>();
@@ -204,7 +249,7 @@ export function TabGraficos() {
             return <g key={t}>
               <line x1={L} x2={W - Rr} y1={y} y2={y} stroke="var(--grid)" strokeWidth={1} />
               <text x={L-6} y={y+4} textAnchor="end" style={{ fill:'var(--ink-3)', fontSize:11.5, fontFamily:'var(--font-num)' }}>
-                {compact(mKey === 'kg' ? t/1000 : t)}
+                {axisFmt(mKey, t, topV)}
               </text>
             </g>;
           })}
@@ -220,7 +265,8 @@ export function TabGraficos() {
                 <polyline fill="none" stroke={it.color} strokeWidth={2.5} strokeLinejoin="round" points={pts} />
                 {periods.map((p, b) => {
                   const v = matMap.get(it.key)?.get(p) ?? 0;
-                  return <circle key={p} cx={X(b)} cy={Y(v)} r={4.5} fill={it.color} stroke="var(--surface)" strokeWidth={2} />;
+                  return <circle key={p} cx={X(b)} cy={Y(v)} r={4.5} fill={it.color} stroke="var(--surface)" strokeWidth={2}
+                    data-tip={tip(it.displayKey, [[mesLabel(p), fmFull(mKey, v)]])} />;
                 })}
               </g>
             );
@@ -231,7 +277,7 @@ export function TabGraficos() {
     }
 
     if (type === 'bar3d' || type === 'pie3d' || type === 'donut3d') {
-      return <Chart3D items={items as ChartItem[]} type={type as 'bar3d' | 'pie3d' | 'donut3d'} mKey={mKey} total={sum} />;
+      return <Chart3D items={items as ChartItem[]} type={type as 'bar3d' | 'pie3d' | 'donut3d'} mKey={mKey} total={total} />;
     }
 
     return <div className="note">Tipo no disponible aún.</div>;
@@ -270,7 +316,30 @@ export function TabGraficos() {
           <input type="checkbox" checked={showRest} onChange={e => setShowRest(e.target.checked)} />
           Mostrar "Otros"
         </label>
+        <button type="button" className="btn" aria-pressed={colorsOpen}
+          onClick={() => setColorsOpen(o => !o)}>Colores</button>
       </div>
+
+      {colorsOpen && (
+        <div className="cpanel">
+          <div className="cp-head">
+            <div className="pal-prev" aria-hidden="true">
+              {palette.slice(0, 8).map(c => <i key={c} style={{ background: c }} />)}
+            </div>
+            <button type="button" className="btn sm" onClick={() => setColors({})}>Restablecer colores</button>
+          </div>
+          <div className="cp-grid">
+            {items.map(it => (
+              <label key={it.ckey} className="cp-item">
+                <input type="color" value={it.color}
+                  onChange={e => setColors(c => ({ ...c, [it.ckey]: e.target.value }))} />
+                <span className="t" title={it.displayKey}>{it.displayKey}</span>
+              </label>
+            ))}
+          </div>
+          <div className="note">Cada color queda asociado al elemento (no a su posición): no cambia al reordenar o filtrar.</div>
+        </div>
+      )}
 
       {/* Tipo de gráfico */}
       <div className="typebar">
@@ -296,12 +365,18 @@ export function TabGraficos() {
       <div className="piewrap">
         <div className={`pie${type === 'hbar' ? ' wide' : ''}${type.endsWith('3d') ? ' p3d' : ''}`}>
           {renderChart()}
+          {!showRest && nKeys > items.length && PART_OF_WHOLE.includes(type) && (
+            <div className="note">
+              La figura reparte solo los {items.length} mostrados; los % de la leyenda son sobre el total.
+              Activa «Mostrar "Otros"» para ver el total completo.
+            </div>
+          )}
         </div>
         <div className="lgs">
           {items.map(it => {
             const v = it[mKey as keyof typeof it] as number;
             return (
-              <div key={it.key} className="lg">
+              <div key={it.key} className="lg" data-tip={itemTip(it, mKey, total)}>
                 <i style={{ background: it.color, width: 14, height: 14, borderRadius: 4, display: 'block' }} />
                 <span className="t" title={it.displayKey}>{it.displayKey}</span>
                 <span className="v">{fm(mKey, v)}</span>
@@ -309,7 +384,7 @@ export function TabGraficos() {
               </div>
             );
           })}
-          <div className="note">{nf0.format(rows.length)} valores · total {fm(mKey, total)}</div>
+          <div className="note">{nf0.format(nKeys)} valores · total {fm(mKey, total)}</div>
         </div>
       </div>
     </div>

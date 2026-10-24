@@ -50,7 +50,7 @@ export const PRIMARY = ['pais', 'exportador', 'subpartida', 'capitulo', 'aduana'
 export interface MeasDef { l: string; s: string; apiKey: string; }
 export const MEAS: Record<string, MeasDef> = {
   fobUsd: { l: 'Valor FOB (USD)',       s: 'FOB USD',   apiKey: 'fob_usd' },
-  kg:     { l: 'Peso neto (toneladas)', s: 'Peso neto', apiKey: 'kg'      },
+  kg:     { l: 'Peso neto', s: 'Peso neto', apiKey: 'kg'      },
   cnt:    { l: 'Series (registros)',    s: 'Series',    apiKey: 'cnt'     },
   fobCop: { l: 'Valor FOB (COP)',       s: 'FOB COP',   apiKey: 'fob_cop' },
 };

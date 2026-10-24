@@ -1,29 +1,42 @@
 import { useRef } from 'react';
-import { useStore } from '../store';
-import { api } from '../api';
+import { useStore, type UploadOutcome } from '../store';
+import { api, type MonthInfo } from '../api';
 import { mesLabel, nf0 } from '../fmt';
 
 export function Header() {
-  const { months, setMonths, setSummary, setLoading, setError, theme, setTheme } = useStore();
+  const { months, setMonths, setSummary, setLoading, setError, setUploads, theme, setTheme } = useStore();
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function handleFiles(files: FileList | null) {
     if (!files?.length) return;
-    setLoading(true); setError(null);
+    setLoading(true); setError(null); setUploads(null);
+    // Se guarda el resultado de cada archivo: cifras de validación o error
+    const outcomes: UploadOutcome[] = [];
     for (const f of Array.from(files)) {
       try {
-        await api.months.upload(f);
+        outcomes.push({ file: f.name, result: await api.months.upload(f) });
       } catch (e: any) {
-        setError(e.message);
+        outcomes.push({ file: f.name, error: e.message });
       }
     }
+    setUploads(outcomes);
     const updated = await api.months.list();
     setMonths(updated);
     setLoading(false);
+    // Permite volver a elegir el mismo archivo (si no, onChange no se dispara)
+    if (fileRef.current) fileRef.current.value = '';
   }
 
-  async function handleDelete(month: string) {
-    await api.months.delete(month);
+  async function handleDelete(m: MonthInfo) {
+    // Borra el Parquet del servidor: no se puede deshacer
+    const msg = `¿Quitar ${mesLabel(m.month)} (${nf0.format(m.n)} filas)? `
+      + 'Se borra del servidor y habrá que volver a subir el Excel.';
+    if (!window.confirm(msg)) return;
+    try {
+      await api.months.delete(m.month);
+    } catch (e: any) {
+      setError(e.message);
+    }
     const updated = await api.months.list();
     setMonths(updated);
     setSummary(null);
@@ -55,7 +68,7 @@ export function Header() {
           <span key={m.month} className="fchip">
             <span>{mesLabel(m.month)}</span>
             <i>{nf0.format(m.n)} filas</i>
-            <button onClick={() => handleDelete(m.month)} aria-label={`Quitar ${m.month}`}>×</button>
+            <button onClick={() => handleDelete(m)} aria-label={`Quitar ${m.month}`}>×</button>
           </span>
         ))}
       </div>

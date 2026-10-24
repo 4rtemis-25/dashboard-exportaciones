@@ -22,9 +22,11 @@ export function TabRegistros() {
   const [rows, setRows] = useState<RecordRow[]>([]);
 
   useEffect(() => {
+    let vigente = true;  // descarta respuestas de filtros/páginas anteriores
     const f = buildFilter();
     api.query.records({ ...f, sort: regSort, direction: regDir, page: regPage, page_size: PAGE_SIZE })
-      .then(r => { setTotal(r.total); setRows(r.rows); });
+      .then(r => { if (vigente) { setTotal(r.total); setRows(r.rows); } });
+    return () => { vigente = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(buildFilter()), regSort, regDir, regPage]);
 

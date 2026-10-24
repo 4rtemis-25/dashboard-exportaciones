@@ -2,28 +2,86 @@ import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { api, type GroupRow } from '../api';
 import { FILT_DIMS, GROUPS, PRIMARY, DIMMAP } from '../dims';
-import { compact, fmtDim, mesLabel } from '../fmt';
+import { compact, fmtDim, mesLabel, nf0, ymd } from '../fmt';
+
+const FACET_LIMIT = 300;
+
+/**
+ * Campo con borrador local y debounce propio (un temporizador por campo).
+ * Refleja el estado global: si el filtro cambia desde fuera (chip ×, "Limpiar
+ * todo") el campo se actualiza. `norm` convierte el borrador al valor que
+ * guarda el estado, para no pisar lo que el usuario está escribiendo.
+ */
+function DraftInput({ value, onCommit, norm, ...rest }: {
+  value: string;
+  onCommit: (draft: string) => void;
+  norm: (draft: string) => string;
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>) {
+  const [draft, setDraft] = useState(value);
+  const sent = useRef(value);
+
+  useEffect(() => {
+    if (value !== sent.current) { sent.current = value; setDraft(value); }
+  }, [value]);
+
+  useEffect(() => {
+    if (norm(draft) === sent.current) return;
+    const t = setTimeout(() => { sent.current = norm(draft); onCommit(draft); }, 250);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
+
+  return <input {...rest} value={draft} onChange={e => setDraft(e.target.value)} />;
+}
+
+const numStr = (v: number | null) => v == null ? '' : String(v);
+const numNorm = (s: string) => s.trim() === '' || !isFinite(+s) ? '' : String(+s);
+const toNum = (s: string) => numNorm(s) === '' ? null : +s;
+const dateStr = (v: number | null) => v ? ymd(v) : '';
+const toDate = (s: string) => s ? +s.replace(/-/g, '') : null;
 
 function FacetPanel({ dimKey }: { dimKey: string }) {
   const { buildFilter, dimFilters: allFilters, setDimFilter } = useStore();
   const [rows, setRows] = useState<GroupRow[]>([]);
   const [q, setQ] = useState('');
+  const [dq, setDq] = useState('');            // q con debounce (temporizador propio del panel)
+  const [complete, setComplete] = useState(true); // la lista sin búsqueda trae todos los valores
 
   useEffect(() => {
+    const t = setTimeout(() => setDq(q.trim()), 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  // Si la lista está completa se busca en el navegador (también por nombre de
+  // capítulo); si está truncada, el servidor busca entre todos los valores.
+  const serverQ = complete ? '' : dq;
+
+  useEffect(() => {
+    let vigente = true;  // descarta respuestas de filtros anteriores
     const f = buildFilter();
     // Para el facet excluimos el filtro de esta dimensión (buildMask(skip=k) en app.js)
     const { [dimKey]: _, ...rest } = f.filters ?? {};
-    api.query.group({ ...f, filters: rest, dim: dimKey, measure: 'fob_usd', limit: 300 })
-      .then(setRows);
+    api.query.group({ ...f, filters: rest, dim: dimKey, measure: 'fob_usd',
+                      limit: FACET_LIMIT, q: serverQ || null })
+      .then(r => {
+        if (!vigente) return;
+        setRows(r);
+        if (!serverQ) setComplete((r[0]?.n_keys ?? 0) <= r.length);
+      });
+    return () => { vigente = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(buildFilter()), dimKey]);
+  }, [JSON.stringify(buildFilter()), dimKey, serverQ]);
 
   const selected = new Set(allFilters[dimKey] ?? []);
   const filtered = q ? rows.filter(r => fmtDim(dimKey, r.key).toLowerCase().includes(q.toLowerCase())) : rows;
+  const nKeys = rows[0]?.n_keys ?? 0;
+  // Marcados que no están en la lista (fuera del límite o excluidos por otros
+  // filtros): se muestran arriba para poder desmarcarlos
+  const pinned = [...selected].filter(k => !rows.some(r => r.key === k));
 
   function toggle(key: string) {
     const next = new Set(selected);
-    next.has(key) ? next.delete(key) : next.add(key);
+    if (next.has(key)) next.delete(key); else next.add(key);
     setDimFilter(dimKey, [...next]);
   }
 
@@ -36,7 +94,14 @@ function FacetPanel({ dimKey }: { dimKey: string }) {
         <button className="btn sm" onClick={() => setDimFilter(dimKey, [])}>Ninguno</button>
       </div>
       <div className="opts">
-        {filtered.slice(0, 300).map(r => (
+        {pinned.map(k => (
+          <label key={`sel|${k}`} className="opt zero">
+            <input type="checkbox" checked onChange={() => toggle(k)} />
+            <span className="t" title={fmtDim(dimKey, k)}>{fmtDim(dimKey, k)}</span>
+            <span className="c">—</span>
+          </label>
+        ))}
+        {filtered.map(r => (
           <label key={r.key} className={`opt${r.cnt === 0 ? ' zero' : ''}`}>
             <input type="checkbox" checked={selected.has(r.key)}
               onChange={() => toggle(r.key)} />
@@ -44,8 +109,14 @@ function FacetPanel({ dimKey }: { dimKey: string }) {
             <span className="c">{r.cnt > 0 ? compact(r.fob_usd) : '0'}</span>
           </label>
         ))}
-        {filtered.length === 0 && <div className="note">Sin coincidencias.</div>}
-        {filtered.length > 300 && <div className="note">Mostrando 300 de {filtered.length}. Escribe para acotar.</div>}
+        {filtered.length === 0 && (!complete && q.trim() !== dq ? <div className="note">Buscando…</div>
+                                                   : <div className="note">Sin coincidencias.</div>)}
+        {nKeys > rows.length && (
+          <div className="note">
+            Mostrando {nf0.format(rows.length)} de {nf0.format(nKeys)}
+            {serverQ ? ' coincidencias' : ''}. Escribe para acotar.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -77,7 +148,6 @@ export function Sidebar({ open }: { open: boolean }) {
           kgMin, kgMax, setKgRange, clearAllFilters } = useStore();
 
   const [moreOpen, setMoreOpen] = useState(false);
-  const textRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   return (
     <aside id="side" className={open ? 'show' : ''} aria-label="Filtros">
@@ -90,12 +160,8 @@ export function Sidebar({ open }: { open: boolean }) {
       <div className="block">
         <div className="field">
           <label htmlFor="q">Buscar texto</label>
-          <input id="q" type="search" placeholder="Exportador, destinatario, país, subpartida…"
-            defaultValue={text}
-            onChange={e => {
-              if (textRef.current) clearTimeout(textRef.current);
-              textRef.current = setTimeout(() => setText(e.target.value.trim()), 250);
-            }} />
+          <DraftInput id="q" type="search" placeholder="Exportador, destinatario, país, subpartida…"
+            value={text} norm={s => s.trim()} onCommit={s => setText(s.trim())} />
         </div>
       </div>
 
@@ -103,24 +169,25 @@ export function Sidebar({ open }: { open: boolean }) {
       <div className="sec">Periodo</div>
       <div className="block">
         <div className="mchips">
-          {months.map(m => (
-            <button key={m.month} type="button" className="mchip"
-              aria-pressed={selectedMonths.includes(m.month)}
-              onClick={() => toggleMonth(m.month)}>
-              {mesLabel(m.month)}
+          {/* Meses presentes en los datos (un archivo puede traer más de uno) */}
+          {[...new Set(months.flatMap(m => m.months))].sort().map(m => (
+            <button key={m} type="button" className="mchip"
+              aria-pressed={selectedMonths.includes(m)}
+              onClick={() => toggleMonth(m)}>
+              {mesLabel(m)}
             </button>
           ))}
         </div>
         <div className="row2">
           <div className="field">
             <label htmlFor="dMin">Declaración desde</label>
-            <input id="dMin" type="date"
-              onChange={e => setDateRange(e.target.value ? +e.target.value.replace(/-/g,'') : null, dateMax)} />
+            <input id="dMin" type="date" value={dateStr(dateMin)}
+              onChange={e => setDateRange(toDate(e.target.value), dateMax)} />
           </div>
           <div className="field">
             <label htmlFor="dMax">hasta</label>
-            <input id="dMax" type="date"
-              onChange={e => setDateRange(dateMin, e.target.value ? +e.target.value.replace(/-/g,'') : null)} />
+            <input id="dMax" type="date" value={dateStr(dateMax)}
+              onChange={e => setDateRange(dateMin, toDate(e.target.value))} />
           </div>
         </div>
       </div>
@@ -140,25 +207,25 @@ export function Sidebar({ open }: { open: boolean }) {
             <div className="row2">
               <div className="field">
                 <label htmlFor="fobMin">FOB USD mín.</label>
-                <input id="fobMin" type="number" min="0"
-                  onChange={e => setFobRange(e.target.value ? +e.target.value : null, fobMax)} />
+                <DraftInput id="fobMin" type="number" min="0" value={numStr(fobMin)} norm={numNorm}
+                  onCommit={s => setFobRange(toNum(s), useStore.getState().fobMax)} />
               </div>
               <div className="field">
                 <label htmlFor="fobMax">FOB USD máx.</label>
-                <input id="fobMax" type="number" min="0"
-                  onChange={e => setFobRange(fobMin, e.target.value ? +e.target.value : null)} />
+                <DraftInput id="fobMax" type="number" min="0" value={numStr(fobMax)} norm={numNorm}
+                  onCommit={s => setFobRange(useStore.getState().fobMin, toNum(s))} />
               </div>
             </div>
             <div className="row2">
               <div className="field">
                 <label htmlFor="kgMin">Peso mínimo (kg)</label>
-                <input id="kgMin" type="number" min="0"
-                  onChange={e => setKgRange(e.target.value ? +e.target.value : null, kgMax)} />
+                <DraftInput id="kgMin" type="number" min="0" value={numStr(kgMin)} norm={numNorm}
+                  onCommit={s => setKgRange(toNum(s), useStore.getState().kgMax)} />
               </div>
               <div className="field">
                 <label htmlFor="kgMax">Peso máximo (kg)</label>
-                <input id="kgMax" type="number" min="0"
-                  onChange={e => setKgRange(kgMin, e.target.value ? +e.target.value : null)} />
+                <DraftInput id="kgMax" type="number" min="0" value={numStr(kgMax)} norm={numNorm}
+                  onCommit={s => setKgRange(useStore.getState().kgMin, toNum(s))} />
               </div>
             </div>
             <div className="note" style={{ padding: 0 }}>

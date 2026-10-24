@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { fm, nf1 } from '../fmt';
+import { itemTip } from '../tip';
 
 export interface ChartItem {
   key: string;
@@ -173,6 +174,9 @@ export function Chart3D({ items, type, mKey, total }: Chart3DProps) {
         if ((hover as any).userData.dir) hover.position.set(0, 0, 0);
       }
       hover = mesh;
+      // El Tooltip global lee data-tip del canvas en el mismo movimiento del ratón
+      if (mesh) renderer.domElement.dataset.tip = itemTip(mesh.userData.it, mKey, total);
+      else delete renderer.domElement.dataset.tip;
       if (mesh) {
         (mesh.material as THREE.MeshStandardMaterial).emissive.set(mesh.userData.it.color).multiplyScalar(0.28);
         if (mesh.userData.dir) mesh.position.set(mesh.userData.dir[0] * 0.35, mesh.userData.dir[1] * 0.35, 0);
@@ -234,9 +238,10 @@ export function Chart3D({ items, type, mKey, total }: Chart3DProps) {
       renderer.domElement.remove();
       ctrlRef.current = null;
     };
-  // items/type/mKey/total are stable per render; total is derived from items
+  // `items` es un array nuevo en cada render del padre: depender de él
+  // reconstruiría la escena WebGL en cada render. Se depende de su contenido.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, type, mKey, total]);
+  }, [JSON.stringify(items.map(it => [it.key, it.displayKey, it.color, it[mKey as keyof ChartItem]])), type, mKey, total]);
 
   return (
     <div ref={hostRef} className="c3d" style={{ height: 380 }}>

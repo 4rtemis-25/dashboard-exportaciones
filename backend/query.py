@@ -18,11 +18,13 @@ VALID_DIMS = frozenset({
     'subpartida', 'unidad', 'modalidad', 'despacho', 'embarque', 'tipo_datos',
     'moneda', 'pago', 'transito', 'sisesp', 'cert', 'formulario',
 })
-VALID_MEASURES = frozenset({'fob_usd', 'fob_cop', 'kg_neto', 'kg_bruto', 'cant'})
+# Medidas por las que group() puede ordenar: son los alias de su SELECT
+VALID_MEASURES = frozenset({'fob_usd', 'fob_cop', 'kg', 'cnt'})
 VALID_KG = frozenset({'kg_neto', 'kg_bruto'})
 VALID_SORT_RECORDS = frozenset({
     'fecha', 'fob_usd', 'kg_neto', 'exportador', 'pais', 'subpartida', 'aduana', 'modo',
 })
+NODATA = '(sin dato)'  # = converter.NODATA
 TEXT_DIMS = ['exportador', 'destinatario', 'pais', 'subpartida', 'declarante', 'ciudad']
 
 
@@ -46,6 +48,7 @@ class GroupParams(FilterParams):
     dim:     str             = 'pais'
     measure: str             = 'fob_usd'
     limit:   Optional[int]  = 500
+    q:       Optional[str]  = None   # búsqueda dentro de los valores de `dim`
 
 
 @dataclass
@@ -63,19 +66,18 @@ class TimeParams(FilterParams):
 
 
 # ── Helpers internos ───────────────────────────────────────────────────────
-def resolve_files(data_dir: Path, months: Optional[list[str]]) -> list[Path]:
+def resolve_files(data_dir: Path) -> list[Path]:
+    """Todos los Parquet; el filtro de meses se aplica sobre la columna `mes`."""
     if not data_dir.exists():
         return []
-    files = sorted(data_dir.glob('*.parquet'))
-    if months:
-        files = [f for f in files if f.stem in months]
-    return files
+    return sorted(data_dir.glob('*.parquet'))
 
 
 def _from(files: list[Path]) -> str:
     """Cláusula FROM para DuckDB con lista de Parquet."""
     paths = json.dumps([str(f) for f in files])
-    return f'read_parquet({paths})'
+    # union_by_name: tolera Parquet convertidos con versiones anteriores del esquema
+    return f'read_parquet({paths}, union_by_name = true)'
 
 
 def _where(p: FilterParams) -> tuple[str, list]:
@@ -93,6 +95,11 @@ def _where(p: FilterParams) -> tuple[str, list]:
         clauses.append(f'"{dim}" IN ({placeholders})')
         args.extend(values)
 
+    # Por la columna, no por archivo: un archivo puede traer filas de otro mes
+    if p.months:
+        clauses.append(f'mes IN ({", ".join("?" for _ in p.months)})')
+        args.extend(p.months)
+
     if p.date_min: clauses.append('fecha >= ?');  args.append(p.date_min)
     if p.date_max: clauses.append('fecha <= ?');  args.append(p.date_max)
     if p.fob_min is not None: clauses.append('fob_usd >= ?'); args.append(p.fob_min)
@@ -103,13 +110,22 @@ def _where(p: FilterParams) -> tuple[str, list]:
     if p.kg_max is not None: clauses.append(f'"{kg_col}" <= ?'); args.append(p.kg_max)
 
     if p.text and p.text.strip():
-        t = f'%{p.text.strip().lower()}%'
-        text_clause = ' OR '.join(f'LOWER("{c}") LIKE ?' for c in TEXT_DIMS)
+        # contains(): búsqueda literal, '%' y '_' no actúan como comodines
+        t = p.text.strip().lower()
+        text_clause = ' OR '.join(f'contains(lower("{c}"), ?)' for c in TEXT_DIMS)
         clauses.append(f'({text_clause})')
         args.extend([t] * len(TEXT_DIMS))
 
     where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
     return where, args
+
+
+def _distinct(col: str) -> str:
+    """
+    Valores distintos sin contar '(sin dato)': un país vacío no es un país más.
+    Así se cuenta igual que pandas nunique() (los nulos no cuentan).
+    """
+    return f"COUNT(DISTINCT NULLIF(\"{col}\", '{NODATA}'))"
 
 
 def _run(sql: str, args: list) -> list[tuple]:
@@ -125,12 +141,14 @@ def empty_summary() -> dict:
 
 
 def month_stats(parquet_path: Path) -> dict:
-    """Stats rápidos de un Parquet (para GET /api/months)."""
+    """Stats rápidos de un Parquet (para GET /api/months), con los meses que contiene."""
     row = _run(
-        f"SELECT COUNT(*), SUM(fob_usd), SUM(kg_neto) FROM read_parquet('{parquet_path}')",
+        f"SELECT COUNT(*), SUM(fob_usd), SUM(kg_neto), list(DISTINCT mes ORDER BY mes) "
+        f"FROM {_from([parquet_path])}",
         []
     )[0]
-    return {'n': row[0], 'fob': row[1] or 0.0, 'kg': row[2] or 0.0}
+    return {'n': row[0], 'fob': row[1] or 0.0, 'kg': row[2] or 0.0,
+            'months': [m for m in row[3] if m != NODATA]}
 
 
 def summary(files: list[Path], p: FilterParams) -> dict:
@@ -146,11 +164,11 @@ def summary(files: list[Path], p: FilterParams) -> dict:
             SUM(fob_usd)               AS fob,
             SUM(fob_cop)               AS cop,
             SUM(kg_neto)               AS kg,
-            COUNT(DISTINCT formulario) AS formularios,
-            COUNT(DISTINCT exportador) AS exportadores,
-            COUNT(DISTINCT pais)       AS paises,
-            COUNT(DISTINCT subpartida) AS subpartidas,
-            COUNT(DISTINCT aduana)     AS aduanas
+            {_distinct('formulario')}  AS formularios,
+            {_distinct('exportador')}  AS exportadores,
+            {_distinct('pais')}        AS paises,
+            {_distinct('subpartida')}  AS subpartidas,
+            {_distinct('aduana')}      AS aduanas
         FROM {src}
         {where}
     """
@@ -165,32 +183,41 @@ def group(files: list[Path], p: GroupParams) -> list[dict]:
     """
     Equivalente a groupBy(dim, mask) + topIds en app.js.
     Retorna filas ordenadas por la medida pedida.
+    n_keys = valores distintos de la dimensión antes de aplicar el LIMIT.
     """
     if p.dim not in VALID_DIMS:
         return []
-    measure = p.measure if p.measure in VALID_MEASURES else 'fob_usd'
+    # Sin respaldo silencioso a FOB: una medida desconocida ordenaría mal el ranking
+    if p.measure not in VALID_MEASURES:
+        raise ValueError(f'Medida no válida: {p.measure!r}')
+    measure = p.measure
     limit = p.limit or 500
 
     src = _from(files)
     where, args = _where(p)
+    # Búsqueda literal (sin comodines) para encontrar valores fuera del Top
+    if p.q and p.q.strip():
+        where = (where + ' AND ' if where else 'WHERE ') + f'contains(lower("{p.dim}"), ?)'
+        args.append(p.q.strip().lower())
     sql = f"""
         SELECT
             "{p.dim}"       AS key,
             SUM(fob_usd)   AS fob_usd,
             SUM(fob_cop)   AS fob_cop,
             SUM(kg_neto)   AS kg,
-            COUNT(*)       AS cnt
+            COUNT(*)       AS cnt,
+            COUNT(*) OVER () AS n_keys
         FROM {src}
         {where}
         GROUP BY "{p.dim}"
-        ORDER BY {measure} DESC NULLS LAST
+        ORDER BY {measure} DESC NULLS LAST, key
         LIMIT ?
     """
     args.append(limit)
     rows = _run(sql, args)
     return [
         {'key': r[0], 'fob_usd': r[1] or 0.0, 'fob_cop': r[2] or 0.0,
-         'kg': r[3] or 0.0, 'cnt': r[4]}
+         'kg': r[3] or 0.0, 'cnt': r[4], 'n_keys': r[5]}
         for r in rows
     ]
 

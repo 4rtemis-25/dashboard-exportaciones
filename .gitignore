@@ -12,6 +12,8 @@ frontend/dist/
 
 # Data (archivos grandes, no van al repo)
 data/
+*.xlsx
+*.xlsm
 
 # Claude Code local settings
 .claude/

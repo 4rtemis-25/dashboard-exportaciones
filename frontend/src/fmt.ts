@@ -33,10 +33,25 @@ export function fm(measure: string, v: number): string {
   if (measure === 'fobUsd' || measure === 'fob_usd') return 'US$ ' + compact(v);
   if (measure === 'fobCop' || measure === 'fob_cop') return '$ '   + compact(v);
   if (measure === 'kg' || measure === 'kg_neto') {
+    // Menos de 1 t en kg: con toneladas, 15 kg de oro (US$ 1,6 M) se veía "0 t"
+    if (Math.abs(v) < 1000) return nf1.format(v) + ' kg';
     const t = v / 1000;
     return (Math.abs(t) >= 1e4 ? compact(t) : nf1.format(t)) + ' t';
   }
   return nf0.format(v);
+}
+
+/**
+ * Etiqueta de un eje cuya marca más alta es `top`. El peso va en t si la
+ * escala llega a 10 t y en kg si no; con escalas pequeñas lleva decimales
+ * (compact() redondea a entero y 0,5 kg se vería "1").
+ */
+export function axisFmt(measure: string, v: number, top: number): string {
+  if (measure === 'kg' || measure === 'kg_neto') {
+    if (top >= 1e4) return compact(v / 1000) + ' t';
+    return (top < 10 ? nf2.format(v) : compact(v)) + ' kg';
+  }
+  return top < 10 ? nf2.format(v) : compact(v);
 }
 
 export function fmFull(measure: string, v: number): string {

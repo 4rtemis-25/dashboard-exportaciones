@@ -9,6 +9,8 @@ import { TabGraficos } from './components/TabGraficos';
 import { TabResumen } from './components/TabResumen';
 import { TabExplorar } from './components/TabExplorar';
 import { TabRegistros } from './components/TabRegistros';
+import { UploadReport } from './components/UploadReport';
+import { Tooltip } from './components/Tooltip';
 import './style.css';
 
 export default function App() {
@@ -23,17 +25,21 @@ export default function App() {
   useEffect(() => {
     api.months.list()
       .then(m => setMonths(m))
-      .catch(() => {});
-  }, []);
+      .catch(() => setError('No se pudo conectar con el servidor de datos.'));
+  }, [setMonths, setError]);  // acciones de zustand: estables, se ejecuta una vez
 
   // Re-calcula el resumen cuando cambian los filtros o los meses cargados
   useEffect(() => {
     if (!hasData) { setSummary(null); return; }
+    // Si los filtros cambian antes de que llegue la respuesta, se descarta:
+    // así los KPIs nunca muestran cifras de un filtro anterior.
+    let vigente = true;
     setLoading(true);
     api.query.summary(buildFilter())
-      .then(s => { setSummary(s); setError(null); })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+      .then(s => { if (vigente) { setSummary(s); setError(null); } })
+      .catch(e => { if (vigente) setError(e.message); })
+      .finally(() => { if (vigente) setLoading(false); });
+    return () => { vigente = false; };
   // La dependencia real son los filtros serializados + la lista de meses
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(buildFilter()), months.map(m => m.month).join(',')]);
@@ -62,6 +68,8 @@ export default function App() {
           {error}
         </div>
       )}
+      <UploadReport />
+      <Tooltip />
 
       <div className="layout">
         {hasData && <Sidebar open={sideOpen} />}

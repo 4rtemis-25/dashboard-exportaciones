@@ -4,7 +4,9 @@ Ejecutar: uvicorn main:app --reload  (desde el directorio backend/)
 """
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
+import logging
+import re
 import shutil
 import tempfile
 
@@ -12,11 +14,16 @@ from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
-from converter import excel_to_parquet
+from converter import ConversionError, excel_to_parquet
 import query as Q
 
 # Parquet files live in <project_root>/data/parquet/
 DATA_DIR = Path(__file__).parent.parent / 'data' / 'parquet'
+
+# Un mes real pesa ~34 MB; el margen cubre años con más operaciones
+MAX_UPLOAD_MB = 200
+
+log = logging.getLogger('panel')
 
 app = FastAPI(title='Panel de Exportaciones API', version='0.1.0')
 
@@ -44,8 +51,9 @@ class FilterBody(BaseModel):
 
 class GroupBody(FilterBody):
     dim:     str            = 'pais'
-    measure: str            = 'fob_usd'
+    measure: Literal['fob_usd', 'fob_cop', 'kg', 'cnt'] = 'fob_usd'  # = Q.VALID_MEASURES
     limit:   Optional[int]  = 500
+    q:       Optional[str]  = None
 
 
 class RecordsBody(FilterBody):
@@ -80,15 +88,25 @@ def upload_month(file: UploadFile):
     if not (file.filename or '').lower().endswith(('.xlsx', '.xlsm')):
         raise HTTPException(400, 'Solo se aceptan archivos .xlsx o .xlsm')
 
-    content = file.file.read()
+    # Copia por bloques al disco: no carga el archivo entero en memoria
     with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp:
-        tmp.write(content)
+        shutil.copyfileobj(file.file, tmp, 1024 * 1024)
+        size = tmp.tell()
         tmp_path = Path(tmp.name)
 
     try:
+        if size > MAX_UPLOAD_MB * 1024 * 1024:
+            raise HTTPException(
+                413, f'{file.filename}: pesa {size / 1e6:.0f} MB; el máximo es {MAX_UPLOAD_MB} MB')
         stats = excel_to_parquet(tmp_path, DATA_DIR)
-    except Exception as e:
-        raise HTTPException(500, f'Error al procesar el archivo: {e}')
+    except ConversionError as e:
+        raise HTTPException(400, f'{file.filename}: {e}')
+    except HTTPException:
+        raise
+    except Exception:
+        # El detalle va al log del servidor, no al navegador
+        log.exception('Error al convertir %s', file.filename)
+        raise HTTPException(500, f'{file.filename}: error inesperado al procesar el archivo')
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -104,6 +122,9 @@ def list_months():
 
 @app.delete('/api/months/{month}')
 def delete_month(month: str):
+    # Solo YYYYMM: evita rutas como '..\otro' (en Windows '\' separa carpetas)
+    if not re.fullmatch(r'\d{6}', month):
+        raise HTTPException(400, f'Mes no válido: {month!r}')
     path = DATA_DIR / f'{month}.parquet'
     if not path.exists():
         raise HTTPException(404, f'Mes {month!r} no encontrado')
@@ -118,7 +139,7 @@ def query_summary(body: FilterBody):
     Totales y conteos únicos para los filtros aplicados.
     Equivalente a compute() → R.k en app.js.
     """
-    files = Q.resolve_files(DATA_DIR, body.months)
+    files = Q.resolve_files(DATA_DIR)
     if not files:
         return Q.empty_summary()
     return Q.summary(files, _fp(body))
@@ -133,10 +154,10 @@ def query_group(body: GroupBody):
     Ejemplo de respuesta:
     [{"key": "Estados Unidos", "fob_usd": 1234.5, "fob_cop": 4938, "kg": 500, "cnt": 12}, ...]
     """
-    files = Q.resolve_files(DATA_DIR, body.months)
+    files = Q.resolve_files(DATA_DIR)
     if not files:
         return []
-    p = Q.GroupParams(**_fp(body).__dict__, dim=body.dim, measure=body.measure, limit=body.limit)
+    p = Q.GroupParams(**_fp(body).__dict__, dim=body.dim, measure=body.measure, limit=body.limit, q=body.q)
     return Q.group(files, p)
 
 
@@ -146,7 +167,7 @@ def query_records(body: RecordsBody):
     Registros paginados para la pestaña Registros.
     Retorna {total, rows: [{fecha, exportador, pais, subpartida, aduana, modo, kg_neto, fob_usd}]}.
     """
-    files = Q.resolve_files(DATA_DIR, body.months)
+    files = Q.resolve_files(DATA_DIR)
     if not files:
         return {'total': 0, 'rows': []}
     p = Q.RecordsParams(
@@ -163,7 +184,7 @@ def query_timeseries(body: TimeBody):
     Serie temporal para el gráfico de evolución (pestaña Resumen → Gráficos).
     Con stack_dim incluye una columna stack_key para desglose por dimensión.
     """
-    files = Q.resolve_files(DATA_DIR, body.months)
+    files = Q.resolve_files(DATA_DIR)
     if not files:
         return []
     p = Q.TimeParams(

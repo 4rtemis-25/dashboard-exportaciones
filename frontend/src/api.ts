@@ -4,8 +4,10 @@
  */
 
 // ── Tipos ──────────────────────────────────────────────────────────────────
+// Un archivo cargado; `month` es su mes principal (el de más filas)
 export interface MonthInfo {
-  month: string;   // "202601"
+  month: string;    // "202601"
+  months: string[]; // FECHA_PROCESO presentes en el archivo
   n: number;
   fob: number;
   kg: number;
@@ -13,7 +15,11 @@ export interface MonthInfo {
 
 export interface UploadResult {
   path: string;
+  month: string;
+  replaced: boolean;
   months: string[];
+  rows_by_month: Record<string, number>;
+  missing_columns: string[];
   n: number;
   fob_usd: number;
   kg_neto: number;
@@ -42,7 +48,11 @@ export interface GroupRow {
   fob_cop: number;
   kg: number;
   cnt: number;
+  n_keys: number;  // valores distintos de la dimensión antes del límite
 }
+
+// Medidas por las que el backend puede ordenar (VALID_MEASURES en query.py)
+export type GroupMeasure = 'fob_usd' | 'fob_cop' | 'kg' | 'cnt';
 
 export interface RecordRow {
   fecha: number;
@@ -85,8 +95,9 @@ export interface FilterParams {
 
 export interface GroupParams extends FilterParams {
   dim: string;
-  measure?: string;
+  measure?: GroupMeasure;
   limit?: number;
+  q?: string | null;  // búsqueda dentro de los valores de `dim`
 }
 
 export interface RecordsParams extends FilterParams {
@@ -131,7 +142,8 @@ export const api = {
         .then(r => r.ok ? r.json() as Promise<UploadResult> : r.json().then(e => { throw new Error(e.detail); }));
     },
     delete: (month: string) =>
-      fetch(`/api/months/${month}`, { method: 'DELETE' }).then(r => r.json()),
+      fetch(`/api/months/${encodeURIComponent(month)}`, { method: 'DELETE' })
+        .then(r => r.ok ? r.json() : r.json().then(e => { throw new Error(e.detail); })),
   },
 
   query: {

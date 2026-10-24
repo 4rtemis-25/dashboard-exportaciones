@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useStore, MEASURE_KEY } from '../store';
+import { useStore, MEASURE_KEY, summaryTotal } from '../store';
 import { api, type GroupRow } from '../api';
 import { FILT_DIMS, MEAS } from '../dims';
 import { fm, nf0, nf1, fmtDim } from '../fmt';
@@ -11,12 +11,17 @@ export function TabExplorar() {
   const mKey = MEASURE_KEY[measure];
 
   useEffect(() => {
+    let vigente = true;  // descarta respuestas de filtros anteriores
     const f = buildFilter();
-    api.query.group({ ...f, dim: rankDim, measure: mKey, limit: rankTop || 500 })
-      .then(setRows);
-    api.query.summary(f).then(s => setTotal(
-      measure === 'fobUsd' ? s.fob : measure === 'fobCop' ? s.cop : measure === 'kg' ? s.kg : s.n
-    ));
+    Promise.all([
+      api.query.group({ ...f, dim: rankDim, measure: mKey, limit: rankTop || 500 }),
+      api.query.summary(f),
+    ]).then(([rows, s]) => {
+      if (!vigente) return;
+      setRows(rows);
+      setTotal(summaryTotal(s, measure));
+    });
+    return () => { vigente = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(buildFilter()), rankDim, rankTop, measure]);
 
@@ -47,7 +52,8 @@ export function TabExplorar() {
         <button type="button" className="btn" onClick={copyTable}>Copiar tabla</button>
       </div>
       <div className="sub">
-        {nf0.format(rows.length)} valores distintos · ordenado por {MEAS[measure].l} · clic para filtrar
+        {nf0.format(rows[0]?.n_keys ?? 0)} valores distintos
+        {(rows[0]?.n_keys ?? 0) > rows.length && ` (se muestran ${nf0.format(rows.length)})`} · ordenado por {MEAS[measure].l} · clic para filtrar
       </div>
       <div className="tw" style={{ maxHeight: 640 }}>
         <table id="expTbl">
@@ -58,7 +64,7 @@ export function TabExplorar() {
               <th className="n">{MEAS[measure].s}</th>
               <th className="n">Part. %</th>
               {measure !== 'fobUsd' && <th className="n">FOB USD</th>}
-              {measure !== 'kg' && <th className="n">Peso (t)</th>}
+              {measure !== 'kg' && <th className="n">Peso neto</th>}
               {measure !== 'cnt' && <th className="n">Series</th>}
             </tr>
           </thead>

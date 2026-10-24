@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { useStore, MEASURE_KEY } from '../store';
+import { useStore, MEASURE_KEY, summaryTotal } from '../store';
 import { api, type GroupRow, type TimePoint } from '../api';
-import { compact, fm, nf0, nf2, mesLabel, fmtDim } from '../fmt';
+import { axisFmt, compact, fm, fmFull, nf0, nf2, mesLabel, fmtDim, ymd } from '../fmt';
+import { itemTip, tip, MEAS_LABEL } from '../tip';
 import { MEAS } from '../dims';
 
 // ── KPI cards ─────────────────────────────────────────────────────────────
@@ -16,7 +17,7 @@ function Kpi({ label, value, detail, main }: { label: string; value: string; det
 }
 
 // ── Barra horizontal simple ───────────────────────────────────────────────
-function BarList({ rows, measure, dim }: { rows: GroupRow[]; measure: string; dim: string }) {
+function BarList({ rows, measure, dim, total }: { rows: GroupRow[]; measure: string; dim: string; total: number }) {
   const max = rows[0]?.[measure as keyof GroupRow] as number ?? 1;
   if (!rows.length) return <div className="note">Sin datos con los filtros actuales.</div>;
   return (
@@ -25,7 +26,7 @@ function BarList({ rows, measure, dim }: { rows: GroupRow[]; measure: string; di
         const v = r[measure as keyof GroupRow] as number;
         const label = fmtDim(dim, r.key);
         return (
-          <div key={r.key} className="br">
+          <div key={r.key} className="br" data-tip={itemTip({ ...r, displayKey: label }, measure, total)}>
             <span className="t" title={label}>{label}</span>
             <span className="tr">
               <span className="f" style={{ display: 'block', width: `${Math.max(0.5, v / max * 100)}%` }} />
@@ -76,7 +77,7 @@ function TimeChart({ points, measure }: { points: TimePoint[]; measure: string }
       <g key={t}>
         <line x1={L} x2={W - Rr} y1={y} y2={y} stroke="var(--grid)" strokeWidth={1} />
         <text x={L - 6} y={y + 4} textAnchor="end" style={{ fill: 'var(--ink-3)', fontSize: 11.5, fontFamily: 'var(--font-num)' }}>
-          {compact(measure === 'kg' ? t / 1000 : t)}
+          {axisFmt(measure, t, top)}
         </text>
       </g>
     );
@@ -91,7 +92,9 @@ function TimeChart({ points, measure }: { points: TimePoint[]; measure: string }
         const cx = L + band * (b + 0.5), x0 = cx - bw / 2;
         return (
           <g key={b}>
-            <rect x={x0} y={T + ih - h} width={bw} height={h} fill="var(--bar)" rx={bw > 6 ? 2 : 0} />
+            <rect x={x0} y={T + ih - h} width={bw} height={h} fill="var(--bar)" rx={bw > 6 ? 2 : 0}
+              data-tip={tip(/^\d{8}$/.test(String(p.period)) ? ymd(+p.period) : mesLabel(p.period),
+                            [[MEAS_LABEL[measure] ?? measure, fmFull(measure, v)], ['Series', nf0.format(p.cnt)]])} />
             {b % every === 0 && (
               <text x={cx} y={H - 8} textAnchor="middle"
                 style={{ fill: 'var(--ink-3)', fontSize: 11.5, fontFamily: 'var(--font-num)' }}>
@@ -124,14 +127,16 @@ export function TabResumen() {
 
   useEffect(() => {
     if (!summary) return;
+    let vigente = true;  // descarta respuestas de filtros anteriores
     const f = buildFilter();
     // Cargar Top 8 para cada card
     CARDS.forEach(([dim]) => {
       api.query.group({ ...f, dim, measure: mKey, limit: 8 })
-        .then(rows => setTopRows(prev => ({ ...prev, [dim]: rows })));
+        .then(rows => { if (vigente) setTopRows(prev => ({ ...prev, [dim]: rows })); });
     });
     // Serie temporal
-    api.query.time({ ...f, granularity: gran }).then(setTimePoints);
+    api.query.time({ ...f, granularity: gran }).then(p => { if (vigente) setTimePoints(p); });
+    return () => { vigente = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(buildFilter()), gran, measure]);
 
@@ -179,7 +184,7 @@ export function TabResumen() {
           <div key={dim} className="card">
             <h3>Top 8 · {title}</h3>
             <div className="sub">{MEAS[measure].l}</div>
-            <BarList rows={topRows[dim] ?? []} measure={mKey} dim={dim} />
+            <BarList rows={topRows[dim] ?? []} measure={mKey} dim={dim} total={summaryTotal(summary, measure)} />
           </div>
         ))}
       </div>

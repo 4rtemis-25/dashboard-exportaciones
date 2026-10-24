@@ -3,17 +3,35 @@
  * Zustand: estado reactivo sin Redux, sin contexto externo.
  */
 import { create } from 'zustand';
-import type { MonthInfo, Summary, FilterParams } from './api';
+import type { MonthInfo, Summary, FilterParams, GroupMeasure, UploadResult } from './api';
+
+// Resultado de subir un archivo: cifras de validación o el error
+export type UploadOutcome =
+  | { file: string; result: UploadResult }
+  | { file: string; error: string };
 
 export type Measure = 'fobUsd' | 'kg' | 'cnt' | 'fobCop';
 export type Tab = 'graficos' | 'resumen' | 'explorar' | 'registros';
 export type Theme = 'auto' | 'light' | 'dark';
 export type Gran = 'mes' | 'dia';
 
+export interface ChartPrefs {
+  dim: string;          // agrupar por
+  top: number;
+  type: string;         // pie, donut, bar, hbar, tree, line, bar3d, pie3d, donut3d
+  rest: boolean;        // mostrar "Otros"
+  colorsOpen: boolean;
+}
+
 // Mapa medida UI → campo API
-export const MEASURE_KEY: Record<Measure, string> = {
+export const MEASURE_KEY: Record<Measure, GroupMeasure> = {
   fobUsd: 'fob_usd', fobCop: 'fob_cop', kg: 'kg', cnt: 'cnt',
 };
+
+// Total de la medida en un resumen (base de porcentajes y de "Otros")
+export function summaryTotal(s: Summary, m: Measure): number {
+  return m === 'fobUsd' ? s.fob : m === 'fobCop' ? s.cop : m === 'kg' ? s.kg : s.n;
+}
 
 export interface AppState {
   // Datos
@@ -21,6 +39,7 @@ export interface AppState {
   summary: Summary | null;
   loading: boolean;
   error: string | null;
+  uploads: UploadOutcome[] | null;   // última carga, hasta que el usuario la cierre
 
   // Filtros (equivalente a S.filters + S.rng + S.text en app.js)
   selectedMonths: string[];           // meses activados (vacío = todos)
@@ -45,6 +64,9 @@ export interface AppState {
   rankByMonth: boolean;
   sideOpen: boolean;
 
+  // Gráficos (en el store para que no se pierda al cambiar de pestaña)
+  chart: ChartPrefs;
+
   // Registro
   regSort: string;
   regDir: 1 | -1;
@@ -55,6 +77,7 @@ export interface AppState {
   setSummary: (s: Summary | null) => void;
   setLoading: (v: boolean) => void;
   setError: (e: string | null) => void;
+  setUploads: (u: UploadOutcome[] | null) => void;
   setMeasure: (m: Measure) => void;
   setTab: (t: Tab) => void;
   setTheme: (t: Theme) => void;
@@ -74,13 +97,14 @@ export interface AppState {
   setSideOpen: (v: boolean) => void;
   setRegSort: (col: string, dir?: 1 | -1) => void;
   setRegPage: (p: number) => void;
+  setChart: (p: Partial<ChartPrefs>) => void;
 
   // Helper: construye FilterParams para la API
   buildFilter: () => FilterParams;
 }
 
 export const useStore = create<AppState>((set, get) => ({
-  months: [], summary: null, loading: false, error: null,
+  months: [], summary: null, loading: false, error: null, uploads: null,
   selectedMonths: [], dimFilters: {},
   dateMin: null, dateMax: null,
   fobMin: null, fobMax: null,
@@ -90,11 +114,19 @@ export const useStore = create<AppState>((set, get) => ({
   stackDim: '', rankDim: 'pais', rankTop: 25, rankByMonth: false,
   sideOpen: true,
   regSort: 'fob_usd', regDir: -1, regPage: 0,
+  // rest: activado por defecto; torta, dona y árbol representan un todo
+  chart: { dim: 'pais', top: 5, type: 'pie', rest: true, colorsOpen: false },
 
-  setMonths:    (months) => set({ months }),
+  // Al cambiar los archivos, deselecciona los meses que ya no existen
+  // (si no, un mes borrado seguiría filtrando y el panel mostraría cero)
+  setMonths:    (months) => set(s => {
+    const avail = new Set(months.flatMap(m => m.months));
+    return { months, selectedMonths: s.selectedMonths.filter(m => avail.has(m)) };
+  }),
   setSummary:   (summary) => set({ summary }),
   setLoading:   (loading) => set({ loading }),
   setError:     (error) => set({ error }),
+  setUploads:   (uploads) => set({ uploads }),
   setMeasure:   (measure) => set({ measure }),
   setTab:       (tab) => set({ tab }),
   setTheme:     (theme) => set({ theme }),
@@ -106,6 +138,7 @@ export const useStore = create<AppState>((set, get) => ({
   setRankByMonth: (rankByMonth) => set({ rankByMonth }),
   setText:      (text) => set({ text, regPage: 0 }),
   setRegPage:   (regPage) => set({ regPage }),
+  setChart:     (p) => set(s => ({ chart: { ...s.chart, ...p } })),
 
   toggleMonth: (month) => set(s => {
     const cur = s.selectedMonths;
